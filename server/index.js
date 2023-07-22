@@ -7,6 +7,9 @@ import Submission_Schema from './DB/models/submissions_schema.js';
 import Problem_Schema from './DB/models/problems_schema.js';
 import generateFile from './generateFile.js';
 import executeCpp from './executeCPP.js';
+import executeJava from './executeJava.js';
+import executeConly from './executeC.js';
+import executePython from './executePython.js';
 import fs from 'fs';
 connectDB();
 User.createCollection()
@@ -101,11 +104,28 @@ app.get('/Problem/:id', async (req, res) => {
 });
 
 
-app.get("/UserProfile", auth, (req, res) => {
+app.get("/UserProfile", auth, async (req, res) => {
   const userobj=req.USER_DETAILS;
   console.log('hi')
   console.log(userobj)
-  res.json(userobj);
+  const totalEasyQuestions = await Problem_Schema.countDocuments({ difficulty: 'easy' });
+  const totalMediumQuestions = await Problem_Schema.countDocuments({ difficulty: 'medium' });
+  const totalHardQuestions = await Problem_Schema.countDocuments({ difficulty: 'hard' });
+
+  // Fetch the number of questions solved by the user in each category
+  console.log(userobj.email);
+  const solvedEasyQuestions = await Submission_Schema.distinct('title', { username: userobj.email.toString() , verdict: 'Accepted', difficulty: 'easy' });
+  const solvedMediumQuestions = await Submission_Schema.distinct('title', { username: userobj.email.toString() , verdict: 'Accepted', difficulty: 'medium' });
+  const solvedHardQuestions = await Submission_Schema.distinct('title', { username: userobj.email.toString() , verdict: 'Accepted', difficulty: 'hard' });
+
+  // Count the number of unique problems solved by the user in each category
+  const numSolvedEasyQuestions = solvedEasyQuestions.length;
+  const numSolvedMediumQuestions = solvedMediumQuestions.length;
+  const numSolvedHardQuestions = solvedHardQuestions.length;
+
+
+  const userStats={totalEasyQuestions, totalMediumQuestions, totalHardQuestions, numSolvedEasyQuestions, numSolvedMediumQuestions, numSolvedHardQuestions};
+  res.json({ userobj , userStats});
 })
 
 
@@ -145,16 +165,71 @@ app.post("/mys", auth , async (req, res) => {
   }
 });
 
+app.post("/RunCode", async (req, res) => {
+  const { code, input, language } = req.body;
+
+  try {
+    // Generate file based on language and code
+    let filePath;
+    if (language === 'cpp') {
+      filePath = await generateFile('cpp', code);
+    } else if (language === 'java') {
+      filePath = await generateFile('java', code);
+    } else if (language === 'c') {
+      filePath = await generateFile('c', code);
+    } else if (language === 'python') {
+      filePath = await generateFile('py', code);
+    } else {
+      // Handle other languages if needed
+      throw new Error('Unsupported language');
+    }
+
+    let output;
+    if (language === 'cpp') {
+      output = await executeCpp(filePath, input);
+    } else if (language === 'java') {
+      output = await executeJava(filePath, input);
+    } else if (language === 'c') {
+      output = await executeConly(filePath, input);
+    } else if (language === 'python') {
+      output = await executePython(filePath, input);
+    } else {
+      // Handle other languages if needed
+      throw new Error('Unsupported language');
+    }
+
+    // Delete generated file
+    fs.unlink(filePath, () => {});
+
+    res.json({ output });
+  } catch (error) {
+    console.error("Error running code:", error);
+    res.status(500).json({ error: "Failed to run code" });
+  }
+});
+
+
 app.post("/ProblemSubmission", auth, async (req, res) => {
-  const { title, code, language } = req.body;
+  const { title, code, language, difficulty } = req.body;
 
   try {
     // Fetch problem data from the database
     const problem = await Problem_Schema.findOne({ title });
 
     // Generate file based on language and code
-    const format = language;
-    const filePath = await generateFile(format, code);
+    let filePath;
+    if (language === "cpp") {
+      filePath = await generateFile("cpp", code);
+    } else if (language === "java") {
+      filePath = await generateFile("java", code);
+    } else if (language === 'c') {
+      filePath = await generateFile('c', code);
+    } else if (language === "python") {
+      filePath = await generateFile("py", code);
+    } else {
+      // Handle other languages if needed
+      throw new Error("Unsupported language");
+    }
 
     // Execute code for all test cases and compare output with expected output
     const tests = [];
@@ -162,8 +237,21 @@ app.post("/ProblemSubmission", auth, async (req, res) => {
 
     for (const testCase of problem.testCases) {
       const { input, expectedOutput } = testCase;
-      const output = await executeCpp(filePath, input);
-      const isCorrect = output.trim() === expectedOutput.trim();
+      let output;
+      if (language === "cpp") {
+        output = await executeCpp(filePath, input);
+      } else if (language === "java") {
+        output = await executeJava(filePath, input);
+      }  else if (language === 'c') {
+        output = await executeConly(filePath, input);
+      } else if (language === "python") {
+        output = await executePython(filePath, input);
+      } else {
+        // Handle other languages if needed
+        throw new Error("Unsupported language");
+      }
+
+      const isCorrect = output.toString().trim() === expectedOutput.trim();
 
       tests.push({
         input,
@@ -192,6 +280,7 @@ app.post("/ProblemSubmission", auth, async (req, res) => {
       tests,
       verdict,
       dateTime: new Date(),
+      difficulty,
     });
 
     // Save the submission to the database
@@ -202,6 +291,9 @@ app.post("/ProblemSubmission", auth, async (req, res) => {
     res.status(500).json({ error: "Failed to save submission" });
   }
 });
+
+
+
 
 app.post("/Submissions", async (req, res) => {
   const searchUser = req.body.searchUser;
